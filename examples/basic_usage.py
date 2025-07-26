@@ -21,12 +21,46 @@ nb_realisations = 25
 hawkes_simulate = ExponentialHawkesGVM(model='gvm', mu=mu, alpha=alpha, beta=beta, alpha_tilde=alpha)
 times = hawkes_simulate.simulate(size=size, nb_realisations=nb_realisations)
 
-# Estimate parameters
+# Estimation
 
 hawkes_est = ExponentialHawkesGVM()
+
+## Step 1 
+
 hawkes_est.fit(times)
 
-print(' mu estimation:', hawkes_est.average_estimation[0], '\n\n',
+print(' After Step 1:', '\n\n',
+      'mu estimation:', hawkes_est.average_estimation[0], '\n\n',
      'alpha estimation:', hawkes_est.average_estimation[1], '\n\n',
      'beta estimation:', hawkes_est.average_estimation[2], '\n\n',
-     'alpha_tilde estimation:', hawkes_est.average_estimation[3])
+     'alpha_tilde estimation:', hawkes_est.average_estimation[3], '\n\n')
+
+## Step 2 
+
+hawkes_est.test_absence_interactions()
+
+## Step 3 
+
+hawkes_est.fit(times)
+
+print(' After Step 3:', '\n\n',
+      'mu estimation:', hawkes_est.average_estimation[0], '\n\n',
+     'alpha estimation:', hawkes_est.average_estimation[1], '\n\n',
+     'beta estimation:', hawkes_est.average_estimation[2], '\n\n',
+     'alpha_tilde estimation:', hawkes_est.average_estimation[3], '\n\n')
+
+## Step 4 
+
+hawkes_est.tests_hp_vm()
+
+## Step 5 
+
+hawkes_est.fit(times)
+
+print(' After Step 5:', '\n\n',
+      'mu estimation:', hawkes_est.average_estimation[0], '\n\n',
+     'alpha estimation:', hawkes_est.average_estimation[1], '\n\n',
+     'beta estimation:', hawkes_est.average_estimation[2], '\n\n',
+     'alpha_tilde estimation:', hawkes_est.average_estimation[3], '\n\n')
+
+print('Average p-value with final estimation:', np.mean(hawkes_est.pvalues()))
