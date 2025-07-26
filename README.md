@@ -12,9 +12,9 @@ This repository implements the methods described in:
 
 - Multivariate Hawkes processes
 - Variable length memory with exponential decay kernels
-- Simulation from specified parameters
-- Parameter estimation by Maximum Likelihood Estimation (MLE)
-- Interaction type inference via statistical confidence intervals
+- Simulation
+- Parameter estimation by Maximum Likelihood Estimation
+- Estimation of interaction types via confidence intervals
 - Goodness-of-fit tests
 
 ## Dependencies
@@ -31,10 +31,9 @@ Includes a basic simulation and estimation example using synthetic data.
 
 The script in `examples/basic_usage.py` demonstrates how to:
 
-- Define a Generalised Hawkes process with variable length memory
+- Define a generalised Hawkes process with variable length memory
 - Simulate spike trains from the model
-- Estimate the model parameters via maximum likelihood
-- Visualise the estimated intensity functions and confidence intervals
+- Perform the 5-step estimation procedure explained in [1]
 
 ## Reproducibility
 
@@ -49,4 +48,4 @@ Sacha Quayle
 
 ## References
 
-S. Quayle, A. Bonnet, M. Sangnier, Hawkes Processes with Variable Length Memory: Existence, Inference and Application to Neuronal Activity. arXiv:?
+[1] S. Quayle, A. Bonnet, M. Sangnier, Hawkes Processes with Variable Length Memory: Existence, Inference and Application to Neuronal Activity. arXiv:?
