@@ -6,7 +6,7 @@ This repository implements the methods described in:
 
 > **S. Quayle, A. Bonnet, M. Sangnier**,  
 > *Hawkes Processes with Variable Length Memory: Existence, Inference and Application to Neuronal Activity*.  
-> arXiv:? (to be updated)
+> arXiv: https://arxiv.org/abs/2507.22867
 
 ## Features
 
@@ -48,4 +48,4 @@ Sacha Quayle
 
 ## References
 
-[1] S. Quayle, A. Bonnet, M. Sangnier, Hawkes Processes with Variable Length Memory: Existence, Inference and Application to Neuronal Activity. arXiv:?
+[1] S. Quayle, A. Bonnet, M. Sangnier, Hawkes Processes with Variable Length Memory: Existence, Inference and Application to Neuronal Activity. arXiv: https://arxiv.org/abs/2507.22867
