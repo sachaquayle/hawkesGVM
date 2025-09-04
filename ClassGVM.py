@@ -427,9 +427,9 @@ class ExponentialHawkesGVM():
             Total number of parameters in the model. For 'hp' or 'vm': d*(d+2). For 'gvm': 2*d*(d+1).
             Default is None.
         alpha_zero_coefficients : array-like of bool, size (d,d) 
-            Marks alpha parameters as null (True where alpha and alpha_tilde are zero).
+            Marks alpha parameters as null (True where alpha is zero).
         alpha_tilde_zero_coefficients : array-like of bool, size (d,d) 
-            Marks alpha_tilde parameters as null (True where alpha and alpha_tilde are zero).
+            Marks alpha_tilde parameters as null (True where alpha_tilde is zero).
         equal_coefficients : array-like of bool, size (d,d) 
             Marks equal coefficients (True where alpha and alpha_tilde are equal).
             Default is None.
@@ -764,80 +764,6 @@ class ExponentialHawkesGVM():
             self.estimation = self.unflatten_parameters(res.x)
             self.message = res.message 
             self.result = res
-
-    def pvalues_ok(self, resampling=True, nb_iterations=1, independent_samples=None, av_estimation=True):
-        """
-        Computes p-values for the goodness-of-fit test using resampling or provided samples, using average estimation or estimation over all realisations.
-
-        Parameters
-        ----------
-        resampling : bool, optional
-            If True, p-values are computed using the resampling procedure.
-            If False, p-values are computed using the provided samples (shared or independent, depending on 'independent_samples').
-            Default is True.
-        nb_iterations : int, optional
-            Number of resampling iterations to perform during the goodness-of-fit testing procedure.
-            Default is 1.
-        independent_samples : list of list of tuple (float, int), optional
-            Lists of independent realisations of the Hawkes process. Each realisation is a sequence of event times and their corresponding dimensions. The number of realisations must match self.nb_realisations.
-        av_estimation : bool, optional
-            If True, p-values are computed using the averaged estimation over multiple realisations.
-            If False, p-values are computed using the estimation over all realisations.
-            Default is True.
-
-        Returns
-        ----------
-        pvalues : array of float
-            Array of computed p-values. Its length is equal to 'nb_iterations' if 'resampling' is True,  or 'self.nb_realisations' if 'resampling' is False.
-        
-        Raises
-        --------
-        ValueError
-            If 'av_estimation' is True but 'self.average_estimation' is None, or if 'av_estimation' is False but 'self.estimation' is None.
-        """
-        if av_estimation and self.average_estimation is None:
-            raise ValueError('Must have average estimation.')
-        if not av_estimation and self.estimation is None:
-            raise ValueError('Must have estimation over all realisations.')
-
-        if resampling:
-            max_nb = min([len(l) for l in self.times]) # Find maximal number of event times
-            pvalues = np.zeros(nb_iterations) # Initialise p-values
-            sample_size = int(self.nb_realisations**(1/2)) 
-    
-            times_transformed = [0 for _ in range(self.nb_realisations)]
-            for k in range(self.nb_realisations):
-                if av_estimation:
-                    times_transformed[k] = self.calculate_test_values(self.average_estimation, self.times[k])
-                else :
-                    times_transformed[k] = self.calculate_test_values(self.estimation, self.times[k])
-                
-            for k in range(nb_iterations):
-                test_values = np.zeros(max_nb * sample_size)
-                random_indexes = np.sort(np.random.choice(np.arange(self.nb_realisations), size=sample_size, replace=False))
-                for i in range(sample_size):
-                    index = random_indexes[i]
-                    test_values[i*max_nb : (i+1)*max_nb] = times_transformed[index][:max_nb]
-                pvalues[k] = kstest(test_values,'expon').pvalue
-        
-            return pvalues 
-
-        else:
-            pvalues = np.zeros(self.nb_realisations) # Initialise p-values
-    
-            if independent_samples is None:
-                samples = self.times
-            else :
-                samples = independent_samples
-    
-            for k in range(self.nb_realisations):
-                if av_estimation:
-                    test_values = self.calculate_test_values(self.average_estimation, samples[k])
-                else:
-                    test_values = self.calculate_test_values(self.estimation, samples[k])
-                pvalues[k] = kstest(test_values,'expon').pvalue
-
-            return pvalues
 
 
     def pvalues(self, resampling=True, nb_iterations=1, independent_samples=None, av_estimation=True):
