@@ -66,7 +66,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
     Returns
     -------
     log_likelihood : float
-        The computed log-likelihood for the given realization.
+        The computed log-likelihood for the given realisation.
     gradient : array-like
         The gradient of the log-likelihood with respect to the model parameters.
         The shape of this array matches the input 'parameters' array.
@@ -74,7 +74,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
     Notes
     -----
     - The function assumes the input 'parameters' array is correctly formatted according to the chosen model and masks.
-    - The nested structure of 'realisation' should match the dimensions ('d') and represent event times properly.
+    - The structure of 'realisation' should match the dimensions ('d') and represent event times properly.
     """
 
     nb_alpha_nonzero = (~mask_alpha).sum()
@@ -616,13 +616,10 @@ class ExponentialHawkesGVM():
             - mu (array-like): The mu values of size (d,).
             - alpha (array-like): The alpha matrix of shape (d, d), reconstructed with masked values restored.
             - beta (array-like): The beta values of size (d,).
-            - alpha_tilde (array-like, optional): The alpha_tilde matrix of shape (d, d), 
-              reconstructed if the model is 'gvm'.
+            - alpha_tilde (array-like, optional): The alpha_tilde matrix of shape (d, d), reconstructed if the model is 'gvm', with masked values restored and by ensuring parameters marked by 'self.equal_coefficients' are set accordingly.
     
         Notes
         -----
-        - If 'self.model' is 'gvm', the function also reconstructs 'alpha_tilde' 
-          and ensures parameters marked by 'self.equal_coefficients' are set accordingly.
         - If 'self.alpha_zero_coefficients', 'self.alpha_tilde_zero_coefficients', 
           or 'self.equal_coefficients' are 'None', they are initialized as 'False' matrices of shape (d, d).
         - The function assumes the input 'parameters' array is correctly formatted.
@@ -691,8 +688,8 @@ class ExponentialHawkesGVM():
             - 'self.average_estimations': Stores the averaged estimations across all realisations.
         
         If 'each_realisation' is False:
-            - 'self.estimation': Stores the estimation result for the aggregated data.
-            - 'self.message': Stores the summary message for the optimisation process over the aggregated data.
+            - 'self.estimation': Stores the estimation result over all realisations.
+            - 'self.message': Stores the message associated with the optimisation process over all realisations.
                     
         Raises
         ------
@@ -1129,7 +1126,7 @@ class ExponentialHawkesGVM():
         self.alpha_tilde_zero_coefficients : array-like of bool, size (d,d) 
             Marks alpha_tilde parameters as null (True where alpha_tilde is zero).
         self.equal_coefficients : array-like of bool, shape (d, d)  
-            Indicates where alpha parameters are equal to alpha_tilde (True if alpha=alpha_tilde, False otherwise).  
+            Indicates where alpha parameters are equal to alpha_tilde (True where alpha=alpha_tilde).  
             
         Raises
         --------
@@ -1262,7 +1259,7 @@ class ExponentialHawkesGVM():
             - If 'realisation_index' is 'None': returns the sum of the log-likelihoods across all realisations.
             - Otherwise: returns the log-likelihood for the specified 'realisation_index'.
         gradient : array
-            - If 'realisation_index' is 'None': returns the sum of gradients across all realizations.
+            - If 'realisation_index' is 'None': returns the sum of gradients across all realisations.
             - Otherwise: returns the gradient for the specified 'realisation_index'.
             
         Raises
@@ -1288,7 +1285,7 @@ class ExponentialHawkesGVM():
         """
         Calculate the test values for the goodness-of-fit test based on compensator differences.
     
-        The function computes the differences between the transformed event times (Lambda(T_k)) and the compensator (Lambda) for the given realization, which are used for the Kolmogorov-Smirnov goodness-of-fit test.
+        The function computes the differences between the transformed event times (Lambda(T_k)) and the compensator (Lambda) for the given realisation, which are used for the Kolmogorov-Smirnov goodness-of-fit test.
     
         Parameters
         ----------
