@@ -25,22 +25,22 @@ This code was implemented using Python >=3.8 and requires Numpy, Matplotlib, Sci
 
 Copy all files in the current working directory.
 
-## Example 
+## Simulation examples
 
-Includes a basic simulation and estimation example using synthetic data.
+The `simulations/` folder contains all simulations presented in the main article and supplementary material, illustrating the 5-step estimation procedure described in [1].
 
-The script in `examples/basic_usage.py` demonstrates how to:
+- `simulations.ipynb` contains all scripts required to reproduce the figures from the article.
+- `results_sim/` contains the estimation results saved as `.txt` files.
+- `supplementary_material.ipynb` contains the scripts used to reproduce the figures from the supplementary material.
 
-- Define a generalised Hawkes process with variable length memory
-- Simulate spike trains from the model
-- Perform the 5-step estimation procedure explained in [1]
+## Results on neuronal data
 
-## Reproducibility
+The `data/` folder contains the neuronal datasets together with the corresponding estimation results.
 
-The parameters used in the synthetic experiments of our paper are provided in  
-`examples/paper_parameters.py`.
-
-The data used and preprocessing steps for applying the model to real neuronal spike train data (as described in the paper) are available in  `examples/neuronal_data` and `examples/preprocess_neuronal_data.py`.
+- `neuronal_data/` contains the original neuronal recordings.
+- `preprocessing.ipynb` preprocesses the original trials, saves the processed data in `scripts_and_data/7_trials.txt` using the required format, and generates a sample of resampled trials stored in `scripts_and_data/data_61.txt` for estimation.
+- `scripts_and_data/` contains all scripts used for estimation and file generation.
+- `results_estimation_trials.ipynb` presents the estimation results and reproduces the figures from the article.
 
 ## Author
 
