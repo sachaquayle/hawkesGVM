@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 from scipy.optimize import minimize
-from scipy.stats import kstest, expon
+from scipy.stats import kstest, expon, cramervonmises
 import time
 from numba import njit
 import statsmodels
@@ -73,7 +73,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
     
     Notes
     -----
-    - The function assumes the input 'parameters' array is correctly formatted according to the chosen model and masks.
+    - The function assumes the input 'parameters' array is correctly formatted according to the chosen model, dimension, and masks.
     - The structure of 'realisation' should match the dimensions ('d') and represent event times properly.
     """
 
@@ -81,7 +81,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
     nb_alpha_tilde_nonzero = (np.logical_and(~mask_alpha_tilde, ~mask_equal)).sum()
     
     N = len(realisation)
-    restart_times = np.zeros((d, N))
+    restart_times = np.zeros(d)
     mu = parameters[:d]
 
     first_jump = realisation[0,0]
@@ -113,7 +113,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
         dB = np.zeros(d)
 
         log_likelihood = np.sum(mu) * realisation[0, 0] - np.log( logit(mu[int(realisation[0, 1])], t))
-        intensities = np.zeros((d, N))
+        intensities = np.zeros(d)
 
         for i in range(1, N):
             jump_time = realisation[i, 0]
@@ -123,10 +123,9 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
             last_index = int(realisation[i - 1, 1])
 
             decay_factor = np.exp(-beta * (jump_time - last_jump_time))
-            intensities[:, i] = decay_factor * (intensities[:, i - 1] + alpha[:, last_index])
 
-            inside_log = np.where(mu + intensities[:, i - 1] + alpha[:, last_index] < 0,
-                                    (-intensities[:, i - 1] - alpha[:, last_index]) / mu,
+            inside_log = np.where(mu + intensities + alpha[:, last_index] < 0,
+                                    (-intensities - alpha[:, last_index]) / mu,
                                     1)
 
             vector_aux = np.log(inside_log)
@@ -134,20 +133,23 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
             j_i = np.zeros(d)
 
             for j in range(d):
-                restart_times[j,i-1] = np.minimum(jump_time, last_jump_time + vector_aux[j]/beta[j])
-                decay_diff[j] = np.exp(-beta[j] * (restart_times[j, i - 1] - last_jump_time)) -np.exp(-beta[j] * (jump_time - last_jump_time))
-                j_i[j] = mu[j] * (jump_time-restart_times[j,i-1]) + ((intensities[j, i - 1] + alpha[j, last_index]) / beta[j] )* (decay_diff[j])
+                restart_times[j] = np.minimum(jump_time, last_jump_time + vector_aux[j]/beta[j])
+                decay_diff[j] = np.exp(-beta[j] * (restart_times[j] - last_jump_time)) -np.exp(-beta[j] * (jump_time - last_jump_time))
+                j_i[j] = mu[j] * (jump_time-restart_times[j]) + ((intensities[j] + alpha[j, last_index]) / beta[j] )* (decay_diff[j])
 
             ############ Gradient with compensator term
             for j in range(d):
-                grad_mu[j] += jump_time - restart_times[j,i-1] 
+                grad_mu[j] += jump_time - restart_times[j] 
                 for k in range(d):
                     grad_alpha[j,k] += beta_1[j] * dA[j,k] * decay_diff[j]
                 grad_alpha[j,last_index] += beta_1[j] * (decay_diff[j])
-                grad_beta[j] += beta_1[j] * (dB[j] - beta_1[j] * (intensities[j,i-1]+alpha[j,last_index])) * decay_diff[j] + beta_1[j] * (intensities[j,i-1]+alpha[j,last_index]) * ( (jump_time - last_jump_time) * decay_factor[j] - (restart_times[j,i-1]-last_jump_time)* np.exp(-beta[j] * (restart_times[j, i - 1] - last_jump_time)))
-            ############
+                grad_beta[j] += beta_1[j] * (dB[j] - beta_1[j] * (intensities[j]+alpha[j,last_index])) * decay_diff[j] + beta_1[j] * (intensities[j]+alpha[j,last_index]) * ( (jump_time - last_jump_time) * decay_factor[j] - (restart_times[j]-last_jump_time)* np.exp(-beta[j] * (restart_times[j] - last_jump_time)))
             
-            int_before_jump = mu[current_index] + intensities[current_index, i]
+            ############ Update log-likelihood
+            new_intensities = decay_factor * (intensities + alpha[:, last_index])
+            
+            int_before_jump = mu[current_index] + new_intensities[current_index]
+            
             psi = logit(int_before_jump, t)
             int_term = der_logit(int_before_jump, t) / psi
 
@@ -158,15 +160,18 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
             for k in range(d):
                 grad_alpha[current_index,k] -= dA[current_index,k] * decay_factor[current_index] * int_term
             grad_alpha[current_index,last_index] -= decay_factor[current_index] * int_term
-            grad_beta[current_index] -= ((dB[current_index] - (jump_time-last_jump_time) * (intensities[current_index,i-1] + alpha[current_index,last_index])) * decay_factor[current_index]) * int_term
+            grad_beta[current_index] -= ((dB[current_index] - (jump_time-last_jump_time) * (intensities[current_index] + alpha[current_index,last_index])) * decay_factor[current_index]) * int_term
 
             for j in range(d):
                 for k in range(d):
                     dA[j,k] *= decay_factor[j]
                 dA[j,last_index] += decay_factor[j]
-                dB[j] = (dB[j] - (jump_time-last_jump_time) * (intensities[j,i-1]+alpha[j,last_index]) ) * decay_factor[j]
+                dB[j] = (dB[j] - (jump_time-last_jump_time) * (intensities[j]+alpha[j,last_index]) ) * decay_factor[j]
+
+            intensities = new_intensities
+            
             if model == 1:
-                intensities[current_index, i] = 0  # For 'vm' model, memory reset  
+                intensities[current_index] = 0  # For 'vm' model, memory reset  
                 dA[current_index,:] = np.zeros(d)
                 dB[current_index] = 0
             ########
@@ -210,7 +215,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
                     alpha_tilde[i, j] = alpha[i, j]
 
         log_likelihood = np.sum(mu) * realisation[0, 0] - np.log(logit(mu[int(realisation[0, 1])], t))
-        intensities = np.zeros((3 * d, N))
+        intensities = np.zeros(3 * d)
 
         dA_eta = np.zeros((d, d))
         dA_aux = np.zeros((d, d))
@@ -233,26 +238,22 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
 
             decay_factor = np.exp(-beta * (jump_time - last_jump_time))
 
-            inside_log = np.where(mu + intensities[:d, i - 1] + intensities[2*d:, i - 1] + alpha[:, last_index] < 0,
-                                    (-intensities[:d, i - 1] - intensities[2*d:, i - 1] - alpha[:, last_index]) / mu,
+            inside_log = np.where(mu + intensities[:d] + intensities[2*d:] + alpha[:, last_index] < 0,
+                                    (-intensities[:d] - intensities[2*d:] - alpha[:, last_index]) / mu,
                                     1)
 
             vector_aux = np.log(inside_log)
             decay_diff = np.zeros(d)
             j_i = np.zeros(d)
-
+            
             for j in range(d):
-                intensities[j, i] = decay_factor[j] * (intensities[j, i - 1] + alpha[j, last_index])
-                intensities[d+j, i] = decay_factor[j] * (intensities[d+j, i - 1] + alpha_tilde[j, last_index])
-                intensities[2*d+j, i] = decay_factor[j] * intensities[2*d+j, i - 1]
-
-                restart_times[j,i-1]= np.minimum(jump_time, last_jump_time + vector_aux[j]/beta[j])
-                decay_diff[j] = np.exp(-beta[j] * (restart_times[j, i - 1] - last_jump_time)) - np.exp(-beta[j] * (jump_time - last_jump_time))
-                j_i[j] =  mu[j] * (jump_time - restart_times[j, i - 1]) + beta_1[j]*(intensities[j, i - 1] + intensities[2*d+j, i - 1] + alpha[j, last_index]) *(decay_diff[j]) 
+                restart_times[j]= np.minimum(jump_time, last_jump_time + vector_aux[j]/beta[j])
+                decay_diff[j] = np.exp(-beta[j] * (restart_times[j] - last_jump_time)) - np.exp(-beta[j] * (jump_time - last_jump_time))
+                j_i[j] =  mu[j] * (jump_time - restart_times[j]) + beta_1[j]*(intensities[j] + intensities[2*d+j] + alpha[j, last_index]) *(decay_diff[j]) 
 
             ############ Gradient comp term
             for j in range(d):
-                grad_mu[j] += jump_time - restart_times[j,i-1] 
+                grad_mu[j] += jump_time - restart_times[j] 
                 for k in range(d):
                     grad_alpha[j,k] += beta_1[j] * (dA_eta[j,k]+dA_eta_tilde[j,k]) * decay_diff[j]
                     grad_alpha_tilde[j,k] += beta_1[j] * (dAt_eta[j,k]+dAt_eta_tilde[j,k]) * decay_diff[j]
@@ -263,11 +264,14 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
                     grad_alpha[j,last_index] = avg_gradient
                     grad_alpha_tilde[j,last_index] = avg_gradient
                 
-                grad_beta[j] += beta_1[j] * (dB_eta[j]+dB_eta_tilde[j] - beta_1[j] * (intensities[j,i-1]+intensities[2*d+j,i-1]+alpha[j,last_index])) * decay_diff[j] + beta_1[j] * (intensities[j,i-1]+intensities[2*d+j,i-1]+alpha[j,last_index]) * ( (jump_time - last_jump_time) * decay_factor[j] - (restart_times[j,i-1]-last_jump_time)* np.exp(-beta[j] * (restart_times[j, i - 1] - last_jump_time)))
-            ############
-
-  
-            int_before_jump = mu[current_index] + intensities[current_index, i] + intensities[2*d + current_index, i]
+                grad_beta[j] += beta_1[j] * (dB_eta[j]+dB_eta_tilde[j] - beta_1[j] * (intensities[j]+intensities[2*d+j]+alpha[j,last_index])) * decay_diff[j] + beta_1[j] * (intensities[j]+intensities[2*d+j]+alpha[j,last_index]) * ( (jump_time - last_jump_time) * decay_factor[j] - (restart_times[j]-last_jump_time)* np.exp(-beta[j] * (restart_times[j] - last_jump_time)))
+            
+            ############ Update log-likelihood
+            new_eta = decay_factor * (intensities[:d] + alpha[:, last_index])
+            new_eta_aux = decay_factor * (intensities[d:2*d] + alpha_tilde[:, last_index])
+            new_eta_tilde = decay_factor * (intensities[2*d:])
+            
+            int_before_jump = mu[current_index] + new_eta[current_index] + new_eta_tilde[current_index]
                 
             psi = logit(int_before_jump, t)
             int_term = der_logit(int_before_jump, t) / psi
@@ -285,7 +289,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
                 grad_alpha[current_index,last_index] = avg_gradient
                 grad_alpha_tilde[current_index,last_index] = avg_gradient
             
-            grad_beta[current_index] -= ((dB_eta[current_index]+dB_eta_tilde[current_index] - (jump_time-last_jump_time) * (intensities[current_index,i-1] + intensities[2*d+current_index,i-1] + alpha[current_index,last_index])) * decay_factor[current_index]) * int_term
+            grad_beta[current_index] -= ((dB_eta[current_index]+dB_eta_tilde[current_index] - (jump_time-last_jump_time) * (intensities[current_index] + intensities[2*d+current_index] + alpha[current_index,last_index])) * decay_factor[current_index]) * int_term
             for j in range(d):
                 if j != current_index:
                     for k in range(d):
@@ -309,9 +313,9 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
                         dA_aux[j,last_index] = avg_value
                         dAt_aux[j,last_index] = avg_value
                         
-                    dB_eta[j] = (dB_eta[j] - (jump_time-last_jump_time)*(intensities[j,i-1]+alpha[j,last_index]))*decay_factor[j]
-                    dB_aux[j] = (dB_aux[j] - (jump_time-last_jump_time)*(intensities[d+j,i-1]+alpha_tilde[j,last_index]))*decay_factor[j]
-                    dB_eta_tilde[j] = (dB_eta_tilde[j] - (jump_time-last_jump_time) * (intensities[2*d+j,i-1]) ) * decay_factor[j]
+                    dB_eta[j] = (dB_eta[j] - (jump_time-last_jump_time)*(intensities[j]+alpha[j,last_index]))*decay_factor[j]
+                    dB_aux[j] = (dB_aux[j] - (jump_time-last_jump_time)*(intensities[d+j]+alpha_tilde[j,last_index]))*decay_factor[j]
+                    dB_eta_tilde[j] = (dB_eta_tilde[j] - (jump_time-last_jump_time) * (intensities[2*d+j]) ) * decay_factor[j]
                 else :
                     for k in range(d):
                         dA_eta_tilde[current_index,k] = (dA_eta_tilde[current_index,k] + dA_aux[current_index,k])*decay_factor[j]
@@ -324,7 +328,7 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
                         dA_eta_tilde[current_index,last_index] = avg_value
                         dAt_eta_tilde[current_index,last_index] = avg_value
                     
-                    dB_eta_tilde[current_index] = (dB_eta_tilde[current_index] - (jump_time-last_jump_time) * (intensities[2*d+current_index,i-1]) ) * decay_factor[current_index] + (dB_aux[current_index] - (jump_time-last_jump_time) * (intensities[d+current_index,i-1]+alpha_tilde[current_index,last_index] ) )*decay_factor[current_index]
+                    dB_eta_tilde[current_index] = (dB_eta_tilde[current_index] - (jump_time-last_jump_time) * (intensities[2*d+current_index]) ) * decay_factor[current_index] + (dB_aux[current_index] - (jump_time-last_jump_time) * (intensities[d+current_index]+alpha_tilde[current_index,last_index] ) )*decay_factor[current_index]
 
                     dA_eta[current_index,:] = np.zeros(d)
                     dA_aux[current_index,:] = np.zeros(d)
@@ -335,10 +339,14 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
                     dAt_eta[current_index,:] = np.zeros(d)
                     dAt_aux[current_index,:] = np.zeros(d)
             ########
+            intensities[:d] = new_eta
+            intensities[2*d:] = new_eta_tilde
+            
+            intensities[current_index] = 0
+            intensities[2*d+current_index] += decay_factor[current_index]*(intensities[d+current_index]+alpha_tilde[current_index][last_index])
 
-            intensities[current_index][i] = 0
-            intensities[d+current_index][i] = 0
-            intensities[2*d+current_index][i] += decay_factor[current_index]*(intensities[d+current_index][i-1]+alpha_tilde[current_index][last_index])
+            intensities[d:2*d] = new_eta_aux
+            intensities[d+current_index] = 0
         
         idx = 0
         new_grad_alpha_tilde = np.zeros(nb_alpha_tilde_nonzero) # Reconstruct grad alpha
@@ -360,6 +368,104 @@ def negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mas
         grad_comp = np.concatenate((grad_mu,new_grad_alpha,grad_beta, new_grad_alpha_tilde))
 
         return log_likelihood, grad_comp
+
+
+@njit
+def negloglikelihood_with_grad_single_jit_pen(parameters, realisation, model, d, t, lambda_pen, mu_pen):
+    """
+    Compute the penalised log-likelihood and its gradient for a single realisation of a Hawkes process.
+    
+    Parameters
+    ----------
+    parameters : array
+        Model parameters. 
+        - For 'hp' and 'vm': 
+          [mu_1, ..., mu_d, alpha_11, alpha_12, ..., alpha_dd, beta_1, ..., beta_d].
+        - For 'gvm': 
+          [mu_1, ..., mu_d, alpha_11, alpha_12, ..., alpha_dd, beta_1, ..., beta_d, alpha_tilde_11, alpha_tilde_12, ..., alpha_tilde_dd].
+    realisation : array-like of tuple (float, int)
+        Sequence of event times and their corresponding dimensions.
+    model : int
+        Specifies the model to be used: 0 for 'hp', 1 for 'vm', 2 for 'gvm'.
+    d : int
+        The number of dimensions of the point process.
+    t : float
+        Softplus function parameter.
+    lambda_pen : float
+        Penalisation parameter for alpha_tilde (vm interactions).
+    mu_pen : float
+        Penalisation parameter for alpha and alpha_tilde (interaction sparsity).
+        
+    Returns
+    -------
+    log_likelihood : float
+        The computed log-likelihood for the given realisation.
+    gradient : array-like
+        The gradient of the log-likelihood with respect to the model parameters.
+        The shape of this array matches the input 'parameters' array.
+    
+    Notes
+    -----
+    - The function assumes the input 'parameters' array is correctly formatted according to the chosen model, dimension, and masks.
+    - The structure of 'realisation' should match the dimensions ('d') and represent event times properly.
+    """
+    
+    mask_alpha = np.zeros((d, d), dtype=np.bool_)
+    mask_alpha_tilde = np.zeros((d, d), dtype=np.bool_)
+    mask_equal = np.zeros((d, d), dtype=np.bool_)
+    
+    nll_value, grad = negloglikelihood_with_grad_single_jit(parameters, realisation, model, d, mask_alpha, mask_alpha_tilde, mask_equal, t)
+
+    nb_alpha = d * d
+    alpha = parameters[d : d + nb_alpha].reshape((d, d))
+    eps = 1e-8
+
+    if model==2:
+        alpha_tilde = parameters[2*d+d*d:].reshape((d, d))
+    
+        # penalisation lambda
+        
+        row_norms_tilde = np.sqrt(np.sum(alpha_tilde**2, axis=1) + eps)
+        penalty_lambda_value = lambda_pen * np.sum(row_norms_tilde)
+        grad_alpha_tilde_lambda = lambda_pen * (alpha_tilde / row_norms_tilde[:, np.newaxis])
+    
+        # penalisation mu
+        
+        joint_norms = np.sqrt(alpha**2 + alpha_tilde**2 + eps)
+        penalty_mu_value = mu_pen * np.sum(joint_norms)
+        grad_alpha_pen = mu_pen * alpha / joint_norms
+        grad_alpha_tilde_mu = mu_pen * alpha_tilde / joint_norms
+    
+        # add to totals
+        
+        penalty_value = penalty_lambda_value + penalty_mu_value
+        
+        grad_alpha_tilde_pen = grad_alpha_tilde_lambda + grad_alpha_tilde_mu
+    
+        grad_pen = np.zeros_like(parameters)
+        grad_pen[d : d + d*d] = grad_alpha_pen.ravel()
+        grad_pen[2*d+d*d :] = grad_alpha_tilde_pen.ravel()
+    
+        nll_value_pen = nll_value + penalty_value
+        grad_pen_total = grad + grad_pen
+    else:
+        # penalisation mu
+        
+        joint_norms = np.sqrt(alpha**2 + eps)
+        penalty_mu_value = mu_pen * np.sum(joint_norms)
+        grad_alpha_pen = mu_pen * alpha / joint_norms
+        
+        # add to totals
+        
+        penalty_value = penalty_mu_value
+    
+        grad_pen = np.zeros_like(parameters)
+        grad_pen[d : d + d*d] = grad_alpha_pen.ravel()
+    
+        nll_value_pen = nll_value + penalty_value
+        grad_pen_total = grad + grad_pen
+        
+    return nll_value_pen, grad_pen_total
 
 
 class ExponentialHawkesGVM():
@@ -427,9 +533,9 @@ class ExponentialHawkesGVM():
             Total number of parameters in the model. For 'hp' or 'vm': d*(d+2). For 'gvm': 2*d*(d+1).
             Default is None.
         alpha_zero_coefficients : array-like of bool, size (d,d) 
-            Marks alpha parameters as null (True where alpha is zero).
+            Marks alpha parameters as null (True where alpha and alpha_tilde are zero).
         alpha_tilde_zero_coefficients : array-like of bool, size (d,d) 
-            Marks alpha_tilde parameters as null (True where alpha_tilde is zero).
+            Marks alpha_tilde parameters as null (True where alpha and alpha_tilde are zero).
         equal_coefficients : array-like of bool, size (d,d) 
             Marks equal coefficients (True where alpha and alpha_tilde are equal).
             Default is None.
@@ -582,14 +688,12 @@ class ExponentialHawkesGVM():
             - parameters[0] (array-like): mu values.
             - parameters[1] (array-like): alpha values, with elements removed where 'self.alpha_zero_coefficients' is True.
             - parameters[2] (array-like): beta values.
-            - parameters[3] (optional, array-like): alpha_tilde values, with elements removed where 
-              'self.alpha_tilde_zero_coefficients' or 'self.equal_coefficients' is True.
+            - parameters[3] (optional, array-like): alpha_tilde values, with elements removed where 'self.alpha_tilde_zero_coefficients' or 'self.equal_coefficients' is True.
     
         Returns
         -------
         flattened_parameters : array-like
-            A 1D array containing the filtered and concatenated mu, alpha, and beta values.
-            If alpha_tilde is present, it is also included after filtering.
+            A 1D array containing the flattened parameters.
         """
         mu = parameters[0]
         alpha = parameters[1][~self.alpha_zero_coefficients]
@@ -616,12 +720,12 @@ class ExponentialHawkesGVM():
             - mu (array-like): The mu values of size (d,).
             - alpha (array-like): The alpha matrix of shape (d, d), reconstructed with masked values restored.
             - beta (array-like): The beta values of size (d,).
-            - alpha_tilde (array-like, optional): The alpha_tilde matrix of shape (d, d), reconstructed if the model is 'gvm', with masked values restored and by ensuring parameters marked by 'self.equal_coefficients' are set accordingly.
+            - alpha_tilde (array-like, optional): The alpha_tilde matrix of shape (d, d), reconstructed if the model is 'gvm'.
     
         Notes
         -----
-        - If 'self.alpha_zero_coefficients', 'self.alpha_tilde_zero_coefficients', 
-          or 'self.equal_coefficients' are 'None', they are initialized as 'False' matrices of shape (d, d).
+        - If 'self.model' is 'gvm', the function also reconstructs 'alpha_tilde', and ensures parameters marked by 'self.equal_coefficients' are set accordingly.
+        - If 'self.alpha_zero_coefficients', 'self.alpha_tilde_zero_coefficients', or 'self.equal_coefficients' are 'None', they are initialised as 'False' matrices of shape (d, d).
         - The function assumes the input 'parameters' array is correctly formatted.
         """
         if self.alpha_zero_coefficients is None:
@@ -630,6 +734,7 @@ class ExponentialHawkesGVM():
             self.alpha_tilde_zero_coefficients = np.full((self.d,self.d), False, dtype=bool)
         if self.equal_coefficients is None:
             self.equal_coefficients = np.full((self.d,self.d), False, dtype=bool)
+            
         mu = parameters[:self.d]
         if self.model == 'gvm':
             nb_alpha_params = (~self.alpha_zero_coefficients).sum()
@@ -653,7 +758,7 @@ class ExponentialHawkesGVM():
             return mu,alpha,beta
 
 
-    def fit(self, times, initial_guess=None, bounds=None, each_realisation=True, t=100):
+    def fit(self, times, initial_guess_mu=None, initial_guess_alpha=None, initial_guess_beta=None, initial_guess_alpha_tilde=None, bounds_mu=None, bounds_alpha=None, bounds_beta=None, bounds_alpha_tilde=None, each_realisation=True, t=100, options={}):
         """
         Updates parameter estimations by MLE.
 
@@ -661,24 +766,40 @@ class ExponentialHawkesGVM():
         ----------
         times : list of list of tuple (float, int)
             Lists of realisations of the Hawkes process. Each realisation is a sequence of event times and their corresponding dimensions.
-        initial_guess : list of array, optional
-            Initial parameter values for the estimation. 
-            - For 'hp' or 'vm': [mu, alpha, beta].
-            - For 'gvm': [mu, alpha, beta, alpha_tilde].
-            The sizes of the arrays must be compatible.
+        initial_guess_mu : 1D array, optional
+            Initial guess for mu. Length must be dimension 'd'.
             Default is None.
-        bounds : list of (float,float), optional
-            Bounds for minimisation.
-            - For 'hp' or 'vm': length must be 2*self.d + self.d**2
-            - For 'gvm': length must 2*self.d + 2*self.d**2
+        initial_guess_alpha : 1D array, optional
+            Initial guess for alpha. Length must be consistent with dimension 'd' and masks.
+            Default is None.
+        initial_guess_beta : 1D array, optional
+            Initial guess for beta. Length must be dimension 'd'.
+            Default is None.
+        initial_guess_alpha_tilde : 1D array, optional
+            Initial guess for alpha_tilde. Length must be consistent with dimension 'd' and masks.
+            Default is None.
+        bounds_mu : list of (float,float), optional
+            Bounds for parameter 'mu' for minimisation. Length must be dimension 'd'.
+            Default is None.
+        bounds_alpha : list of (float,float), optional
+            Bounds for parameter 'alpha' for minimisation. Length must be consistent with dimension 'd' and masks.
+            Default is None.
+        bounds_beta : list of (float,float), optional
+            Bounds for parameter 'beta' for minimisation. Length must be dimension 'd'.
+            Default is None.
+        bounds_alpha_tilde : list of (float,float), optional
+            Bounds for parameter 'alpha_tilde' for minimisation. Length must be consistent with dimension 'd' and masks.
             Default is None.
         each_realisation : bool, optional
             If 'True', estimates parameters for each realisation individually. 
-            If 'False', provides a single estimation across all realisations.
+            If 'False', provides a single estimation across all realisations by minimising the sum of log-likelihoods.
             Default is True.
         t : int, optional
             Softplus function parameter.
             Default is 100.
+        options : dict, optional
+            Options for minimisation.
+            Default is {}.
             
         Modifies
         --------
@@ -688,8 +809,8 @@ class ExponentialHawkesGVM():
             - 'self.average_estimations': Stores the averaged estimations across all realisations.
         
         If 'each_realisation' is False:
-            - 'self.estimation': Stores the estimation result over all realisations.
-            - 'self.message': Stores the message associated with the optimisation process over all realisations.
+            - 'self.estimation': Stores the estimation result for the aggregated data.
+            - 'self.message': Stores the summary message for the optimisation process over the aggregated data.
                     
         Raises
         ------
@@ -699,6 +820,8 @@ class ExponentialHawkesGVM():
         self.times = times
         self.nb_realisations = len(self.times)
         self.d = max([m for l in self.times for t,m in l])+1  # To find number of dimensions    
+
+        # Retrieve total number of parameters
         
         if self.model == 'gvm':
             self.nb_params = 2*self.d*(self.d + 1)
@@ -724,46 +847,181 @@ class ExponentialHawkesGVM():
         else :
             self.nb_params -= (np.logical_and(self.equal_coefficients, ~self.alpha_tilde_zero_coefficients)).sum()
             nb_alpha_tilde_params -= (np.logical_and(self.equal_coefficients, ~self.alpha_tilde_zero_coefficients)).sum()
-            
-        if initial_guess is None :
-            if self.model == 'gvm':
-                initial_parameters_flattened = np.concatenate((np.ones(self.d), np.zeros(nb_alpha_params), np.ones(self.d), np.zeros(nb_alpha_tilde_params)))
-            elif self.model == 'hp' or self.model == 'vm':
-                initial_parameters_flattened = np.concatenate((np.ones(self.d), np.zeros(nb_alpha_params), np.ones(self.d)))
+
+        # Initialise guess and bounds
+        
+        if initial_guess_mu is None:
+            initial_guess_mu = np.ones(self.d)
+        if initial_guess_alpha is None:
+            initial_guess_alpha = np.zeros(nb_alpha_params)
+        if initial_guess_beta is None:
+            initial_guess_beta = np.ones(self.d)
+      
+        if bounds_mu is None:
+            bounds_mu = [(1e-15,None)] * self.d
+        if bounds_alpha is None:
+            bounds_alpha = [(None,None)] * nb_alpha_params 
+        if bounds_beta is None:
+            bounds_beta = [(1e-15,None)] * self.d
+
+        if self.model == 'gvm':
+            if initial_guess_alpha_tilde is None:
+                initial_guess_alpha_tilde = np.zeros(nb_alpha_tilde_params)
+            if bounds_alpha_tilde is None:
+                bounds_alpha_tilde = [(None, None)] * nb_alpha_tilde_params
+    
+            initial_guess = np.concatenate((initial_guess_mu, initial_guess_alpha, initial_guess_beta, initial_guess_alpha_tilde))
+            bounds = bounds_mu + bounds_alpha + bounds_beta + bounds_alpha_tilde
 
         else:
-            if (self.model == 'hp' and len(initial_guess) != 3) or (self.model == 'vm' and len(initial_guess) != 3) or (self.model == 'gvm' and len(initial_guess) != 4):
-                raise ValueError('Size of initial_guess is not compatible with the model.')
-            initial_parameters_flattened = self.flatten_parameters(initial_guess)
-            
-        if bounds is None:
-            if self.model == 'gvm' :
-                bounds = [(1e-15,None)] * self.d + [(None,None)] * nb_alpha_params + [(1e-15,None)] * self.d + [(None,None)] * nb_alpha_tilde_params
-            elif self.model == 'hp' or self.model == 'vm' :
-                bounds = [(1e-15,None)] * self.d + [(None,None)] * nb_alpha_params + [(1e-15,None)] * self.d
-        else:
-            if (self.model == 'hp' and len(bounds) != 2*self.d + self.d**2) or (self.model == 'vm' and len(bounds) != 2*self.d + self.d**2) or (self.model == 'gvm'and len(bounds) != 2*self.d + 2*self.d**2):
-                raise ValueError('Size of bounds is not compatible with the model.')
+            initial_guess = np.concatenate((initial_guess_mu, initial_guess_alpha, initial_guess_beta))
+            bounds = bounds_mu + bounds_alpha + bounds_beta 
+        
 
         if each_realisation: # Multiple estimations
             self.multiple_estimations = [0 for _ in range(self.nb_realisations)]
             self.messages = ['' for _ in range(self.nb_realisations)]
             self.results = [0 for _ in range(self.nb_realisations)]
             for k in range(self.nb_realisations):
-                res = minimize(self.negloglikelihood_with_grad_jit, initial_parameters_flattened, args=(k, t), bounds=bounds, jac=True)
+                res = minimize(self.negloglikelihood_with_grad_jit, initial_guess, args=(k, t), bounds=bounds, jac=True)
                 self.multiple_estimations[k]= self.unflatten_parameters(res.x)       
                 self.messages[k] = res.message
                 self.results[k] = res
             self.calculate_average_estimation()
 
-        else :# Estimation over all realisations   
-            res = minimize(self.negloglikelihood_with_grad_jit, initial_parameters_flattened, args=(None, t), bounds=bounds, jac=True)
+        else : # Estimation over all realisations   
+            res = minimize(self.negloglikelihood_with_grad_jit, initial_guess, args=(None, t), bounds=bounds, jac=True)
             self.estimation = self.unflatten_parameters(res.x)
             self.message = res.message 
             self.result = res
 
+            
+    def fit_pen(self, times, initial_guess_mu=None, initial_guess_alpha=None, initial_guess_beta=None, initial_guess_alpha_tilde=None, bounds_mu=None, bounds_alpha=None, bounds_beta=None, bounds_alpha_tilde=None, each_realisation=True, t=100, options={}, lambda_pen=0.01, mu_pen=0.01):
+        """
+        Updates parameter estimations by penalised MLE.
 
-    def pvalues(self, resampling=True, nb_iterations=1, independent_samples=None, av_estimation=True):
+        Parameters
+        ----------
+        times : list of list of tuple (float, int)
+            Lists of realisations of the Hawkes process. Each realisation is a sequence of event times and their corresponding dimensions.
+        initial_guess_mu : 1D array, optional
+            Initial guess for mu. Length must be dimension 'd'.
+            Default is None.
+        initial_guess_alpha : 1D array, optional
+            Initial guess for alpha. Length must be 'd'*'d'.
+            Default is None.
+        initial_guess_beta : 1D array, optional
+            Initial guess for beta. Length must be dimension 'd'.
+            Default is None.
+        initial_guess_alpha_tilde : 1D array, optional
+            Initial guess for alpha_tilde. Length must be 'd'*'d'.
+            Default is None.
+        bounds_mu : list of (float,float), optional
+            Bounds for parameter 'mu' for minimisation. Length must be dimension 'd'.
+            Default is None.
+        bounds_alpha : list of (float,float), optional
+            Bounds for parameter 'alpha' for minimisation. Length must be 'd'*'d'.
+            Default is None.
+        bounds_beta : list of (float,float), optional
+            Bounds for parameter 'beta' for minimisation. Length must be dimension 'd'.
+            Default is None.
+        bounds_alpha_tilde : list of (float,float), optional
+            Bounds for parameter 'alpha_tilde' for minimisation. Length must be 'd'*'d'.
+            Default is None.
+        each_realisation : bool, optional
+            If 'True', estimates parameters for each realisation individually. 
+            If 'False', provides a single estimation across all realisations by minimising the sum of log-likelihoods.
+            Default is True.
+        t : int, optional
+            Softplus function parameter.
+            Default is 100.
+        options : dict, optional
+            Options for minimisation.
+            Default is {}.
+        lambda_pen : float, optional
+            Penalisation parameter for alpha_tilde (vm interactions).
+            Default is 0.01.
+        mu_pen : float, optional
+            Penalisation parameter for alpha and alpha_tilde (interaction sparsity).
+            Default is 0.01.
+            
+        Modifies
+        --------
+        If 'each_realisation' is True:
+            - 'self.multiple_estimations': Stores the estimations for each individual realisation.
+            - 'self.messages': Stores the messages associated with the optimisation process for each realisation.
+            - 'self.average_estimations': Stores the averaged estimations across all realisations.
+        
+        If 'each_realisation' is False:
+            - 'self.estimation': Stores the estimation result for the aggregated data.
+            - 'self.message': Stores the summary message for the optimisation process over the aggregated data.
+                    
+        Raises
+        ------
+        ValueError
+            If size of initial_guess or bounds are incompatible with the considered model.
+        """
+        self.times = times
+        self.nb_realisations = len(self.times)
+        self.d = max([m for l in self.times for t,m in l])+1  # To find number of dimensions    
+
+        # Retrieve total number of parameters
+        
+        if self.model == 'gvm':
+            self.nb_params = 2*self.d*(self.d + 1)
+        else:
+            self.nb_params = self.d*(self.d + 2)
+
+        # Initialise guess and bounds
+
+        if initial_guess_mu is None:
+            initial_guess_mu = np.ones(self.d)
+        if initial_guess_alpha is None:
+            initial_guess_alpha = np.zeros(nb_alpha_params)
+        if initial_guess_beta is None:
+            initial_guess_beta = np.ones(self.d)
+      
+        if bounds_mu is None:
+            bounds_mu = [(1e-15,None)] * self.d
+        if bounds_alpha is None:
+            bounds_alpha = [(None,None)] * nb_alpha_params 
+        if bounds_beta is None:
+            bounds_beta = [(1e-15,None)] * self.d
+
+        if self.model == 'gvm':
+            if initial_guess_alpha_tilde is None:
+                initial_guess_alpha_tilde = np.zeros(nb_alpha_tilde_params)
+            if bounds_alpha_tilde is None:
+                bounds_alpha_tilde = [(None, None)] * nb_alpha_tilde_params
+    
+            initial_guess = np.concatenate((initial_guess_mu, initial_guess_alpha, initial_guess_beta, initial_guess_alpha_tilde))
+            bounds = bounds_mu + bounds_alpha + bounds_beta + bounds_alpha_tilde
+
+        else:
+            initial_guess = np.concatenate((initial_guess_mu, initial_guess_alpha, initial_guess_beta))
+            bounds = bounds_mu + bounds_alpha + bounds_beta 
+        
+
+        if each_realisation: # Multiple estimations
+            self.multiple_estimations = [0 for _ in range(self.nb_realisations)]
+            self.messages = ['' for _ in range(self.nb_realisations)]
+            self.results = [0 for _ in range(self.nb_realisations)]
+            for k in range(self.nb_realisations):
+                res = minimize(self.negloglikelihood_with_grad_jit_pen, initial_guess, args=(k, t, lambda_pen, mu_pen), bounds=bounds, jac=True)
+                self.multiple_estimations[k]= self.unflatten_parameters(res.x)       
+                self.messages[k] = res.message
+                self.results[k] = res
+            self.calculate_average_estimation()
+
+        else : # Estimation over all realisations   
+            res = minimize(self.negloglikelihood_with_grad_jit_pen, initial_guess, args=(None, t, lambda_pen, mu_pen), bounds=bounds, jac=True)
+            self.estimation = self.unflatten_parameters(res.x)
+            self.message = res.message 
+            self.result = res
+            
+
+
+    def pvalues(self, resampling=True, nb_iterations=1, independent_samples=None, av_estimation=False, distribution='expon', method='cramervonmises'):
         """
         Computes p-values for the goodness-of-fit test using resampling or provided samples, using average estimation or estimation over all realisations.
 
@@ -774,24 +1032,33 @@ class ExponentialHawkesGVM():
             If False, p-values are computed using the provided samples (shared or independent, depending on 'independent_samples').
             Default is True.
         nb_iterations : int, optional
-            Number of resampling iterations to perform during the goodness-of-fit testing procedure.
+            Number of resampling iterations to perform during the goodness-of-fit testing procedure if 'resampling' is True.
             Default is 1.
         independent_samples : list of list of tuple (float, int), optional
             Lists of independent realisations of the Hawkes process. Each realisation is a sequence of event times and their corresponding dimensions. The number of realisations must match self.nb_realisations.
+            Default is None.
         av_estimation : bool, optional
             If True, p-values are computed using the averaged estimation over multiple realisations.
             If False, p-values are computed using the estimation over all realisations.
-            Default is True.
+            Default is False.
+        distribution : str, optional
+            Str which indicates which distribution to use for goodness-of-fit (exponential or uniform). Must be 'expon' or 'uniform'.
+            Default is 'expon'.
+        method : str, optional
+            Str which indicates which method to use for goodness-of-fit. Must be 'kstest' or 'cramervonmises'.
+            Default is 'cramervonmises'.
 
         Returns
         ----------
         pvalues : array of float
-            Array of computed p-values. Its length is equal to 'nb_iterations' if 'resampling' is True,  or 'self.nb_realisations' if 'resampling' is False.
+            Array of computed p-values. Its length is equal to 'nb_iterations' if 'resampling' is True,  and 'self.nb_realisations' if 'resampling' is False.
         
         Raises
         --------
         ValueError
             If 'av_estimation' is True but 'self.average_estimation' is None, or if 'av_estimation' is False but 'self.estimation' is None.
+            If 'distribution' is different than 'expon' or 'uniform'.
+            If 'method' is different than 'kstest' or 'cramervonmises'.
         """
         if av_estimation and self.average_estimation is None:
             raise ValueError('Must have average estimation.')
@@ -808,27 +1075,37 @@ class ExponentialHawkesGVM():
                     intervals_transformed[k] = self.calculate_test_values(self.average_estimation, self.times[k])
                 else :
                     intervals_transformed[k] = self.calculate_test_values(self.estimation, self.times[k])
-                
-            for k in range(nb_iterations):
+
+            for k in range(nb_iterations): # perform resampling procedure
                 random_indexes = np.sort(np.random.choice(np.arange(self.nb_realisations), size=sample_size, replace=False)) # Draw subsample at random
-                concatenated_intervals = []
-                total_lengths = []
+            
+                concatenated_times = np.array([]) # to concatenate times
+            
+                add_val = 0
                 for index in random_indexes:
-                    concatenated_intervals.extend(intervals_transformed[index])
-                    total_lengths.append(np.sum(intervals_transformed[index]))
+                    times = np.cumsum(intervals_transformed[index]) + add_val
+                    
+                    concatenated_times = np.concatenate((concatenated_times,times))
+                    add_val += times[-1]
             
-                M = np.mean(total_lengths)
-                theta = 0.99*M
-                
-                cum_sum = 0
-                truncated_intervals = []
-                for val in concatenated_intervals:
-                    if cum_sum + val <= sample_size * theta:
-                        truncated_intervals.append(val)
-                        cum_sum += val
+                max_time = concatenated_times[-1]
+                theta = 0.9 * max_time
+                cut_times = concatenated_times[concatenated_times <= max_time]
+
+                if distribution=='expon':
+                    test_times = cut_times[2:]- cut_times[1:-1]
+                elif distribution=='uniform':
+                    test_times = cut_times/max_time
+                else:
+                    raise ValueError("Distribution must be 'expon' or 'uniform'")
+
+                if method=='kstest':
+                    pvalues[k] = kstest(test_times, distribution).pvalue
+                elif method=='cramervonmises':
+                    pvalues[k] = cramervonmises(test_times, distribution).pvalue
+                else:
+                    raise ValueError("Method must be 'kstest' or 'cramervonmises'")
             
-                pvalues[k] = kstest(truncated_intervals, 'expon').pvalue
-        
             return pvalues 
 
         else:
@@ -839,14 +1116,31 @@ class ExponentialHawkesGVM():
             else :
                 samples = independent_samples
     
-            for k in range(self.nb_realisations):
+            for k in range(self.nb_realisations): # transform times with compensator
                 if av_estimation:
-                    test_values = self.calculate_test_values(self.average_estimation, samples[k])
+                    intervals_transformed = self.calculate_test_values(self.average_estimation, samples[k])
                 else:
-                    test_values = self.calculate_test_values(self.estimation, samples[k])
-                pvalues[k] = kstest(test_values,'expon').pvalue
+                    intervals_transformed = self.calculate_test_values(self.estimation, samples[k])
+
+                if distribution=='expon':
+                    test_times = intervals_transformed
+                elif distribution=='uniform':
+                    transformed_times = np.cumsum(intervals_transformed)
+                    test_times = transformed_times/transformed_times[-1]
+                else:
+                    raise ValueError("Distribution must be 'expon' or 'uniform'")
+                
+                if method=='kstest':
+                    pvalues[k] = kstest(test_times, distribution).pvalue
+                elif method=='cramervonmises':
+                    pvalues[k] = cramervonmises(test_times, distribution).pvalue
+                else:
+                    raise ValueError("Method must be 'kstest' or 'cramervonmises'")
+            
 
             return pvalues
+
+
 
 
     def test_sparsity_alpha(self, level=0.05, asymptotic=True):
@@ -1126,7 +1420,7 @@ class ExponentialHawkesGVM():
         self.alpha_tilde_zero_coefficients : array-like of bool, size (d,d) 
             Marks alpha_tilde parameters as null (True where alpha_tilde is zero).
         self.equal_coefficients : array-like of bool, shape (d, d)  
-            Indicates where alpha parameters are equal to alpha_tilde (True where alpha=alpha_tilde).  
+            Indicates where alpha parameters are equal to alpha_tilde (True if alpha=alpha_tilde, False otherwise).  
             
         Raises
         --------
@@ -1188,7 +1482,8 @@ class ExponentialHawkesGVM():
             for i in range(self.d):
                 for j in range(self.d):
                     if self.alpha_tilde_zero_coefficients[i,j] and self.equal_coefficients[i,j] and ~(self.alpha_zero_coefficients[i,j]):
-                        self.equal_coefficients[i,j] = False
+                        #self.equal_coefficients[i,j] = False
+                        self.alpha_tilde_zero_coefficients[i,j] = False
 
         else: 
             # Test hp
@@ -1259,7 +1554,7 @@ class ExponentialHawkesGVM():
             - If 'realisation_index' is 'None': returns the sum of the log-likelihoods across all realisations.
             - Otherwise: returns the log-likelihood for the specified 'realisation_index'.
         gradient : array
-            - If 'realisation_index' is 'None': returns the sum of gradients across all realisations.
+            - If 'realisation_index' is 'None': returns the sum of gradients across all realizations.
             - Otherwise: returns the gradient for the specified 'realisation_index'.
             
         Raises
@@ -1279,13 +1574,60 @@ class ExponentialHawkesGVM():
                 sum_loglikelihoods[0] += negloglik[0]
                 sum_loglikelihoods[1] += negloglik[1]
             return sum_loglikelihoods
+
         
+    def negloglikelihood_with_grad_jit_pen(self, parameters, realisation_index=None, t=100, lambda_pen=0.01, mu_pen=0.01):
+        """
+        Compute the penalised log-likelihood and gradient using njit, either for a specific realisation or as the sum across all realisations.
+
+        Parameters
+        ----------
+        parameters : array
+            Model parameters. 
+            - For 'hp' and 'vm': 
+              [mu_1, ..., mu_d, alpha_11, alpha_12, ..., alpha_dd, beta_1, ..., beta_d].
+            - For 'gvm': 
+              [mu_1, ..., mu_d, alpha_11, alpha_12, ..., alpha_dd, beta_1, ..., beta_d, alpha_tilde_11, alpha_tilde_12, ..., alpha_tilde_dd].
+        realisation_index : int, optionnal
+            Index of the realisation for which to compute the log-likelihood.
+            If 'None' (default), computes the sum of log-likelihoods across all realisations.
+        t : int, optionnal
+            Softplus function parameter.
+            Default is 100.
+
+        Returns
+        ----------
+        loglikelihood : float
+            - If 'realisation_index' is 'None': returns the sum of the log-likelihoods across all realisations.
+            - Otherwise: returns the log-likelihood for the specified 'realisation_index'.
+        gradient : array
+            - If 'realisation_index' is 'None': returns the sum of gradients across all realizations.
+            - Otherwise: returns the gradient for the specified 'realisation_index'.
+            
+        Raises
+        --------
+        ValueError
+            If there are no times.
+        """
+        if self.times is None :
+            raise ValueError("There are no times.")
+        self.nb_realisations = len(self.times)
+        if realisation_index is not None:  
+            return(negloglikelihood_with_grad_single_jit_pen(parameters,np.array(self.times[realisation_index]), self.model_int, self.d, t, lambda_pen, mu_pen))
+        else :
+            sum_loglikelihoods = [0.0, np.zeros(self.nb_params)]
+            for k in range(self.nb_realisations):
+                negloglik = negloglikelihood_with_grad_single_jit_pen(parameters,np.array(self.times[k]), self.model_int, self.d, t, lambda_pen, mu_pen)
+                sum_loglikelihoods[0] += negloglik[0]
+                sum_loglikelihoods[1] += negloglik[1]
+            return sum_loglikelihoods
+
 
     def calculate_test_values(self, parameters, realisation):
         """
         Calculate the test values for the goodness-of-fit test based on compensator differences.
     
-        The function computes the differences between the transformed event times (Lambda(T_k)) and the compensator (Lambda) for the given realisation, which are used for the Kolmogorov-Smirnov goodness-of-fit test.
+        The function computes the inter-arrival times of the transformed event times (Lambda(T_k)) via the compensator for the given realization.
     
         Parameters
         ----------
@@ -1299,17 +1641,17 @@ class ExponentialHawkesGVM():
         Returns
         -------
         compensator_differences : array
-            Array containing the differences between the transformed event times \(\Lambda(T_k)\) for each event time \(T_k\) in the 'realisation'.
+            Array containing the inter-arrival times of (Lambda(T_k)) for each event time (T_k) in 'realisation'.
         """
         N = len(realisation)
 
         if self.model == 'hp' or self.model =='vm' :
             mu,alpha,beta = parameters
             # Initialise restart times, differences of compensators, compensators and  intensities
-            restart_times = np.zeros((self.d,N))
+            restart_times = np.zeros(self.d)
             compensator_differences = np.zeros(N)
             compensator_differences[0] = np.sum(mu) * realisation[0][0]
-            intensities = np.zeros((self.d,N))
+            intensities = np.zeros(self.d)
 
             for i in range(1,N):
                 jump_time = realisation[i][0]
@@ -1320,22 +1662,23 @@ class ExponentialHawkesGVM():
 
                 # Use recursion formulas
                 decay_factor = np.exp(-beta * (jump_time-last_jump_time))
-                intensities[:,i] = decay_factor * (intensities[:,i-1] + alpha[:,last_index])
-                restart_times[:,i-1] = np.minimum(jump_time,last_jump_time + ( np.log( np.where(mu+intensities[:,i-1]+alpha[:,last_index] < 0,(-intensities[:,i-1]-alpha[:,last_index])/mu,1))) / beta )
-                j_i = mu * (jump_time - restart_times[:,i-1]) + ( (intensities[:,i-1]+alpha[:,last_index])/beta )* (np.exp(-beta*(restart_times[:,i-1]-last_jump_time))-np.exp(-beta*(jump_time - last_jump_time))) 
+                
+                restart_times = np.minimum(jump_time,last_jump_time + ( np.log( np.where(mu+intensities+alpha[:,last_index] < 0,(-intensities-alpha[:,last_index])/mu,1))) / beta )
+                j_i = mu * (jump_time - restart_times) + ( (intensities+alpha[:,last_index])/beta )* (np.exp(-beta*(restart_times-last_jump_time))-np.exp(-beta*(jump_time - last_jump_time))) 
 
                 compensator_differences[i] = np.sum(j_i)
 
+                intensities = decay_factor * (intensities + alpha[:,last_index])
                 if self.model =='vm':
-                    intensities[index][i]=0  # Difference with model 'hp' to reflect the memory reset
+                    intensities[index]=0  # Memory reset
             return compensator_differences
         else:
             mu,alpha,beta,alpha_tilde = parameters
             # Initialise restart times, differences of compensators, compensators and  intensities
-            restart_times = np.zeros((self.d,N))
+            restart_times = np.zeros(self.d)
             compensator_differences = np.zeros(N)
             compensator_differences[0] = np.sum(mu) * realisation[0][0]
-            intensities = np.zeros((3*self.d,N))
+            intensities = np.zeros(3*self.d)
 
             for i in range(1,N):
                 jump_time = realisation[i][0]
@@ -1345,17 +1688,22 @@ class ExponentialHawkesGVM():
                 last_index = realisation[i-1][1]
 
                 decay_factor = np.exp(-beta * (jump_time-last_jump_time))
-                intensities[:self.d,i] = decay_factor * (intensities[:self.d,i-1] + alpha[:,last_index])
-                intensities[self.d:2*self.d,i] = decay_factor * (intensities[self.d:2*self.d,i-1] + alpha_tilde[:,last_index])
-                intensities[2*self.d:,i] = decay_factor * intensities[2*self.d:,i-1]
-                restart_times[:,i-1] = np.minimum(jump_time,last_jump_time + ( np.log( np.where(mu+intensities[:self.d,i-1]+intensities[2*self.d:,i-1]+alpha[:,last_index] < 0,(-intensities[:self.d,i-1]-intensities[2*self.d:,i-1]-alpha[:,last_index])/mu,1))) / beta )
-                j_i = mu* (jump_time - restart_times[:,i-1]) + ( (intensities[:self.d,i-1]+intensities[2*self.d:,i-1]+alpha[:,last_index]) * (np.exp(-beta*(restart_times[:,i-1]-last_jump_time))-np.exp(-beta*(jump_time-last_jump_time))) ) /beta
+
+                restart_times = np.minimum(jump_time,last_jump_time + ( np.log( np.where(mu+intensities[:self.d]+intensities[2*self.d:]+alpha[:,last_index] < 0,(-intensities[:self.d]-intensities[2*self.d:]-alpha[:,last_index])/mu,1))) / beta )
+                j_i = mu* (jump_time - restart_times) + ( (intensities[:self.d]+intensities[2*self.d:]+alpha[:,last_index]) * (np.exp(-beta*(restart_times-last_jump_time))-np.exp(-beta*(jump_time-last_jump_time))) ) /beta
 
                 compensator_differences[i] = np.sum(j_i)
 
-                intensities[index][i] = 0
-                intensities[self.d+index][i] = 0
-                intensities[2*self.d+index][i] += decay_factor[index]*(intensities[self.d+index][i-1]+alpha_tilde[index][last_index])
+                intensities[:self.d] = decay_factor * (intensities[:self.d] + alpha[:,last_index])
+                intensities[index] = 0
+
+                intensities[2*self.d:] = decay_factor * intensities[2*self.d:]
+                intensities[2*self.d+index] += decay_factor[index]*(intensities[self.d+index]+alpha_tilde[index][last_index])
+                
+                intensities[self.d:2*self.d] = decay_factor * (intensities[self.d:2*self.d] + alpha_tilde[:,last_index])
+                intensities[self.d+index] = 0
+
+                
             return compensator_differences
 
 
