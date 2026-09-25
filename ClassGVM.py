@@ -1089,8 +1089,8 @@ class ExponentialHawkesGVM():
                     add_val += times[-1]
             
                 max_time = concatenated_times[-1]
-                theta = 0.9 * max_time
-                cut_times = concatenated_times[concatenated_times <= max_time]
+                theta = 0.99 * max_time
+                cut_times = concatenated_times[concatenated_times <= theta]
 
                 if distribution=='expon':
                     test_times = cut_times[2:]- cut_times[1:-1]
